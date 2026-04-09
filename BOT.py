@@ -29,6 +29,8 @@ MG1_POST_SUCCESS_DELAY = 0.15
 MG2_TEMPLATE_THRESHOLD = 0.72
 # Частота опроса появления Bar.png до начала кликов (сек).
 MG2_APPEAR_CHECK_DELAY = 0.05
+# Максимум проверок появления Bar.png перед возвратом в MG1.
+MG2_MAX_APPEAR_CHECKS = 20
 # Интервал между кликами в MG2 (сек).
 MG2_CLICK_INTERVAL = 1
 # Сколько подряд проверок без Bar.png нужно, чтобы завершить MG2.
@@ -176,14 +178,17 @@ def mini_game_2(sct, template_bar):
     threshold = MG2_TEMPLATE_THRESHOLD
 
     # ждём появление
-    while True:
+    for appear_check in range(1, MG2_MAX_APPEAR_CHECKS + 1):
         frame = grab_roi(sct, ROI_GAME2)
         found, conf, _ = match_template(frame, template_bar, threshold=threshold)
-        print(f"[MG2] check appear: found={found}, conf={conf:.3f}")
+        print(f"[MG2] check appear {appear_check}/{MG2_MAX_APPEAR_CHECKS}: found={found}, conf={conf:.3f}")
         if found:
             print("[MG2] Bar найден. Старт кликов.")
             break
         time.sleep(MG2_APPEAR_CHECK_DELAY)
+    else:
+        print("[MG2] Bar.png не найден в ROI -> возврат в MG1.")
+        return False
 
     interval = MG2_CLICK_INTERVAL
     clicks_done = 0
@@ -199,7 +204,7 @@ def mini_game_2(sct, template_bar):
             no_bar_checks += 1
             if no_bar_checks >= required_no_bar_checks:
                 print(f"[MG2] Bar исчез. Переход в MG3. Сделано {clicks_done} кликов.")
-                return
+                return True
             time.sleep(MG2_NO_BAR_RECHECK_DELAY)
             continue
 
@@ -315,8 +320,8 @@ def run_main_cycle(sct, template_1, template_bar, template_fonar):
             state = BotState.MG2
 
         elif state == BotState.MG2:
-            mini_game_2(sct, template_bar)
-            state = BotState.MG3
+            mg2_completed = mini_game_2(sct, template_bar)
+            state = BotState.MG3 if mg2_completed else BotState.MG1
 
         elif state == BotState.MG3:
             mini_game_3(sct, template_fonar)
