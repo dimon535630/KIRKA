@@ -87,6 +87,17 @@ def click_screen(_x=None, _y=None):
     pydirectinput.mouseUp(button='left')
 
 
+def click_lmb_without_move():
+    """
+    Отдельный клик ЛКМ без перемещения курсора.
+    Нужен для MG2, где камера может резко поворачиваться,
+    и лишнее движение мыши ломает механику.
+    """
+    pydirectinput.mouseDown(button='left')
+    time.sleep(0.03)
+    pydirectinput.mouseUp(button='left')
+
+
 # =========================
 # 1 мини-игра
 # =========================
@@ -112,9 +123,6 @@ def mini_game_1(sct, template_1):
 # =========================
 def mini_game_2(sct, template_bar):
     print("[MG2] Ожидание Bar.png ...")
-    center_x = ROI_GAME2["left"] + ROI_GAME2["width"] // 2
-    center_y = ROI_GAME2["top"] + ROI_GAME2["height"] // 2
-
     # Порог чуть ниже для стабильности
     threshold = 0.72
 
@@ -148,9 +156,9 @@ def mini_game_2(sct, template_bar):
             continue
 
         no_bar_checks = 0
-        click_screen(center_x, center_y)
+        click_lmb_without_move()
         clicks_done += 1
-        print(f"[MG2] CLICK {clicks_done}/{max_clicks} at ({center_x}, {center_y})")
+        print(f"[MG2] CLICK {clicks_done}/{max_clicks} (без движения мыши)")
 
         if clicks_done < max_clicks:
             time.sleep(interval)
@@ -161,7 +169,7 @@ def mini_game_2(sct, template_bar):
 # =========================
 # 3 мини-игра
 # =========================
-def mini_game_3(sct):
+def mini_game_3(sct, template_fonar):
     """
     В ROI_GAME3 переводим изображение в HSV, ищем объекты по COLOR_MASKS,
     кликаем по центрам найденных контуров.
@@ -173,6 +181,14 @@ def mini_game_3(sct):
     last_target_time = time.time()
 
     while True:
+        # Если фонарь исчез раньше, сразу выходим из MG3,
+        # чтобы не продолжать хаотичные клики.
+        fonar_frame = grab_roi(sct, ROI_FONAR)
+        fonar_found, fonar_conf, _ = match_template(fonar_frame, template_fonar, threshold=CONFIDENCE)
+        if not fonar_found:
+            print(f"[MG3] fonar.png исчез (conf={fonar_conf:.2f}) -> выход из MG3")
+            return
+
         frame = grab_roi(sct, ROI_GAME3)
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
@@ -263,7 +279,7 @@ def run_main_cycle(sct, template_1, template_bar, template_fonar):
             state = BotState.MG3
 
         elif state == BotState.MG3:
-            mini_game_3(sct)
+            mini_game_3(sct, template_fonar)
             state = BotState.WAIT_RESET
 
         elif state == BotState.WAIT_RESET:
