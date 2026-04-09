@@ -7,15 +7,64 @@ import pydirectinput
 import keyboard
 from enum import Enum
 
-# отключаем встроенную паузу, чтобы клики были точнее по времени
-pyautogui.PAUSE = 0
-pydirectinput.PAUSE = 0
-
 # =========================
-# Настройки
+# Глобальные константы
 # =========================
-CONFIDENCE = 0.80
+# Базовый порог совпадения шаблонов (0.0..1.0) для большинства проверок.
+TEMPLATE_MATCH_CONFIDENCE = 0.80
+# Частота опроса в циклах ожидания (сек), чтобы не перегружать CPU.
 CHECK_DELAY = 0.03
+
+# Отключаем внутренние паузы библиотек автоклика для максимальной точности.
+AUTO_GUI_INTERNAL_PAUSE = 0
+
+# Задержка после обычного клика ЛКМ (сек), чтобы не спамить кликами.
+POST_CLICK_DELAY = 0.03
+# Длительность удержания ЛКМ в MG2 (сек) для "чистого" клика без движения.
+LMB_HOLD_DURATION = 0.1
+# Задержка после срабатывания MG1 (нажатие E), чтобы дать интерфейсу обновиться.
+MG1_POST_SUCCESS_DELAY = 0.15
+
+# Специальный порог совпадения для Bar.png в MG2 (чуть мягче, чем базовый).
+MG2_TEMPLATE_THRESHOLD = 0.72
+# Частота опроса появления Bar.png до начала кликов (сек).
+MG2_APPEAR_CHECK_DELAY = 0.05
+# Интервал между кликами в MG2 (сек).
+MG2_CLICK_INTERVAL = 1
+# Сколько подряд проверок без Bar.png нужно, чтобы завершить MG2.
+MG2_REQUIRED_NO_BAR_CHECKS = 3
+# Задержка между "пустыми" проверками без Bar.png (сек).
+MG2_NO_BAR_RECHECK_DELAY = 0.03
+
+# Пауза перед повторной проверкой fonar.png, пока MG3 ещё не активирована (сек).
+MG3_WAIT_ACTIVATION_DELAY = 0.02
+# Размер ядра морфологии в MG3 для подавления шумов маски.
+MG3_MORPH_KERNEL_SIZE = (3, 3)
+# Количество итераций морфологического открытия.
+MG3_MORPH_OPEN_ITERATIONS = 1
+# Количество итераций дилатации после открытия.
+MG3_MORPH_DILATE_ITERATIONS = 1
+# Минимальная площадь контура (px), ниже считаем шумом.
+MIN_CONTOUR_AREA = 40
+# Пауза после клика по найденному контуру в MG3 (сек).
+MG3_POST_TARGET_CLICK_DELAY = 0.01
+# Пауза между кадрами обработки MG3 (сек).
+MG3_FRAME_DELAY = 0.01
+
+# Частота проверки исчезновения fonar.png в WAIT_RESET (сек).
+WAIT_RESET_CHECK_DELAY = 0.08
+
+# Горячая клавиша ручной остановки бота.
+STOP_HOTKEY = "f8"
+# Клавиша действия для MG1.
+MG1_ACTION_KEY = "e"
+# Кнопка мыши для обычного клика.
+MOUSE_LEFT_BUTTON = "left"
+# Режим сопоставления шаблонов OpenCV.
+TEMPLATE_MATCH_METHOD = cv2.TM_CCOEFF_NORMED
+# Режимы поиска контуров OpenCV.
+CONTOUR_RETRIEVAL_MODE = cv2.RETR_EXTERNAL
+CONTOUR_APPROX_MODE = cv2.CHAIN_APPROX_SIMPLE
 
 # ROI (для экрана 1920x1080)
 ROI_GAME1 = {"left": 13,   "top": 11,  "width": 413, "height": 79}
@@ -45,8 +94,9 @@ COLOR_MASKS = {
     ],
 }
 
-# Фильтр по площади (убрать шум)
-MIN_CONTOUR_AREA = 40
+# отключаем встроенную паузу, чтобы клики были точнее по времени
+pyautogui.PAUSE = AUTO_GUI_INTERNAL_PAUSE
+pydirectinput.PAUSE = AUTO_GUI_INTERNAL_PAUSE
 
 
 # =========================
@@ -66,12 +116,12 @@ def grab_roi(sct, roi):
     return img
 
 
-def match_template(region_bgr, template_bgr, threshold=CONFIDENCE):
+def match_template(region_bgr, template_bgr, threshold=TEMPLATE_MATCH_CONFIDENCE):
     """Возвращает (found, max_val, max_loc)."""
     if region_bgr.shape[0] < template_bgr.shape[0] or region_bgr.shape[1] < template_bgr.shape[1]:
         return False, 0.0, (0, 0)
 
-    res = cv2.matchTemplate(region_bgr, template_bgr, cv2.TM_CCOEFF_NORMED)
+    res = cv2.matchTemplate(region_bgr, template_bgr, TEMPLATE_MATCH_METHOD)
     _, max_val, _, max_loc = cv2.minMaxLoc(res)
     return max_val >= threshold, max_val, max_loc
 
@@ -82,8 +132,8 @@ def click_screen(_x=None, _y=None):
         pydirectinput.click(int(_x), int(_y))
 
     # Кликаем ЛКМ
-    pydirectinput.click(button='left')
-    time.sleep(0.03)
+    pydirectinput.click(button=MOUSE_LEFT_BUTTON)
+    time.sleep(POST_CLICK_DELAY)
 
 
 def click_lmb_without_move():
@@ -92,9 +142,9 @@ def click_lmb_without_move():
     Нужен для MG2, где камера может резко поворачиваться,
     и лишнее движение мыши ломает механику.
     """
-    pydirectinput.mouseDown(button='left')
-    time.sleep(0.1)
-    pydirectinput.mouseUp(button='left')
+    pydirectinput.mouseDown(button=MOUSE_LEFT_BUTTON)
+    time.sleep(LMB_HOLD_DURATION)
+    pydirectinput.mouseUp(button=MOUSE_LEFT_BUTTON)
 
 
 # =========================
@@ -108,11 +158,11 @@ def mini_game_1(sct, template_1):
     print("[MG1] Ожидание 1.png ...")
     while True:
         frame = grab_roi(sct, ROI_GAME1)
-        found, conf, _ = match_template(frame, template_1, threshold=CONFIDENCE)
+        found, conf, _ = match_template(frame, template_1, threshold=TEMPLATE_MATCH_CONFIDENCE)
         if found:
-            keyboard.press_and_release("e")
+            keyboard.press_and_release(MG1_ACTION_KEY)
             print(f"[MG1] Найдено (conf={conf:.2f}) -> нажата E")
-            time.sleep(0.15)
+            time.sleep(MG1_POST_SUCCESS_DELAY)
             return
         time.sleep(CHECK_DELAY)
 
@@ -123,7 +173,7 @@ def mini_game_1(sct, template_1):
 def mini_game_2(sct, template_bar):
     print("[MG2] Ожидание Bar.png ...")
     # Порог чуть ниже для стабильности
-    threshold = 0.72
+    threshold = MG2_TEMPLATE_THRESHOLD
 
     # ждём появление
     while True:
@@ -133,12 +183,12 @@ def mini_game_2(sct, template_bar):
         if found:
             print("[MG2] Bar найден. Старт кликов.")
             break
-        time.sleep(0.05)
+        time.sleep(MG2_APPEAR_CHECK_DELAY)
 
-    interval = 1
+    interval = MG2_CLICK_INTERVAL
     clicks_done = 0
     no_bar_checks = 0
-    required_no_bar_checks = 3
+    required_no_bar_checks = MG2_REQUIRED_NO_BAR_CHECKS
 
     while True:
         frame = grab_roi(sct, ROI_GAME2)
@@ -150,7 +200,7 @@ def mini_game_2(sct, template_bar):
             if no_bar_checks >= required_no_bar_checks:
                 print(f"[MG2] Bar исчез. Переход в MG3. Сделано {clicks_done} кликов.")
                 return
-            time.sleep(0.03)
+            time.sleep(MG2_NO_BAR_RECHECK_DELAY)
             continue
 
         no_bar_checks = 0
@@ -176,14 +226,14 @@ def mini_game_3(sct, template_fonar):
     while True:
         # Покадровая проверка состояния fonar.png
         fonar_frame = grab_roi(sct, ROI_FONAR)
-        fonar_found, fonar_conf, _ = match_template(fonar_frame, template_fonar, threshold=CONFIDENCE)
+        fonar_found, fonar_conf, _ = match_template(fonar_frame, template_fonar, threshold=TEMPLATE_MATCH_CONFIDENCE)
 
         if not mg3_active:
             if fonar_found:
                 mg3_active = True
                 print(f"[MG3] fonar.png найден (conf={fonar_conf:.2f}) -> запуск HSV-обработки")
             else:
-                time.sleep(0.02)
+                time.sleep(MG3_WAIT_ACTIVATION_DELAY)
                 continue
         elif not fonar_found:
             print(f"[MG3] fonar.png исчез (conf={fonar_conf:.2f}) -> остановка MG3")
@@ -199,11 +249,11 @@ def mini_game_3(sct, template_fonar):
                 mask_total = mask if mask_total is None else cv2.bitwise_or(mask_total, mask)
 
             # немного морфологии против шумов
-            kernel = np.ones((3, 3), np.uint8)
-            mask_total = cv2.morphologyEx(mask_total, cv2.MORPH_OPEN, kernel, iterations=1)
-            mask_total = cv2.morphologyEx(mask_total, cv2.MORPH_DILATE, kernel, iterations=1)
+            kernel = np.ones(MG3_MORPH_KERNEL_SIZE, np.uint8)
+            mask_total = cv2.morphologyEx(mask_total, cv2.MORPH_OPEN, kernel, iterations=MG3_MORPH_OPEN_ITERATIONS)
+            mask_total = cv2.morphologyEx(mask_total, cv2.MORPH_DILATE, kernel, iterations=MG3_MORPH_DILATE_ITERATIONS)
 
-            contours, _ = cv2.findContours(mask_total, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contours, _ = cv2.findContours(mask_total, CONTOUR_RETRIEVAL_MODE, CONTOUR_APPROX_MODE)
             for cnt in contours:
                 area = cv2.contourArea(cnt)
                 if area < MIN_CONTOUR_AREA:
@@ -214,9 +264,9 @@ def mini_game_3(sct, template_fonar):
                 cy = ROI_GAME3["top"] + y + h // 2
                 click_screen(cx, cy)
                 # небольшая задержка между кликами
-                time.sleep(0.01)
+                time.sleep(MG3_POST_TARGET_CLICK_DELAY)
 
-        time.sleep(0.01)
+        time.sleep(MG3_FRAME_DELAY)
 
 
 def wait_fonar_disappear(sct, template_fonar):
@@ -228,11 +278,11 @@ def wait_fonar_disappear(sct, template_fonar):
     while True:
         # Можно проверять на всём экране 1920x1080
         full = grab_roi(sct, FULL_HD_MONITOR)
-        found, conf, _ = match_template(full, template_fonar, threshold=CONFIDENCE)
+        found, conf, _ = match_template(full, template_fonar, threshold=TEMPLATE_MATCH_CONFIDENCE)
         if not found:
             print("[WAIT] fonar.png исчез -> новый цикл")
             return
-        time.sleep(0.08)
+        time.sleep(WAIT_RESET_CHECK_DELAY)
 
 
 class BotState(Enum):
@@ -254,7 +304,7 @@ def run_main_cycle(sct, template_1, template_bar, template_fonar):
     cycle_num = 1
 
     while True:
-        if keyboard.is_pressed("f8"):
+        if keyboard.is_pressed(STOP_HOTKEY):
             print("[MAIN] Нажата F8 -> остановка бота.")
             return
 
