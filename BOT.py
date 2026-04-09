@@ -29,6 +29,8 @@ MG1_POST_SUCCESS_DELAY = 0.15
 MG2_TEMPLATE_THRESHOLD = 0.72
 # Частота опроса появления Bar.png до начала кликов (сек).
 MG2_APPEAR_CHECK_DELAY = 0.05
+# Максимум проверок появления Bar.png перед возвратом в MG1.
+MG2_MAX_APPEAR_CHECKS = 20
 # Интервал между кликами в MG2 (сек).
 MG2_CLICK_INTERVAL = 1
 # Сколько подряд проверок без Bar.png нужно, чтобы завершить MG2.
@@ -42,8 +44,16 @@ MG3_WAIT_ACTIVATION_DELAY = 0.02
 MG3_MORPH_KERNEL_SIZE = (3, 3)
 # Количество итераций морфологического открытия.
 MG3_MORPH_OPEN_ITERATIONS = 1
+# Количество итераций морфологического закрытия (закрывает разрывы в цели).
+MG3_MORPH_CLOSE_ITERATIONS = 1
 # Количество итераций дилатации после открытия.
 MG3_MORPH_DILATE_ITERATIONS = 1
+# Яркость "активных" пикселей в итоговой маске (серый вместо белого).
+MG3_MASK_ACTIVE_GRAY_VALUE = 170
+
+# Исключение серого фона: низкая насыщенность и средняя яркость.
+MG3_GRAY_EXCLUDE_LOW = np.array([0, 0, 25])
+MG3_GRAY_EXCLUDE_HIGH = np.array([180, 45, 210])
 # Минимальная площадь контура (px), ниже считаем шумом.
 MIN_CONTOUR_AREA = 40
 # Пауза после клика по найденному контуру в MG3 (сек).
@@ -80,6 +90,10 @@ FULL_HD_MONITOR = {"left": 0, "top": 0, "width": 1920, "height": 1080}
 
 # HSV-маски
 COLOR_MASKS = {
+    # Белые цели: почти без цвета и высокая яркость.
+    "white": [
+        (np.array([0, 0, 215]), np.array([180, 40, 255])),
+    ],
     "red": [
         (np.array([4, 20, 36]), np.array([25, 255, 255])),
     ],
@@ -88,9 +102,6 @@ COLOR_MASKS = {
     ],
     "yellow": [
         (np.array([8, 19, 50]), np.array([103, 255, 255])),
-    ],
-    "dark": [
-        (np.array([0, 0, 10]),  np.array([85, 150, 150])),
     ],
 }
 
@@ -176,14 +187,17 @@ def mini_game_2(sct, template_bar):
     threshold = MG2_TEMPLATE_THRESHOLD
 
     # ждём появление
-    while True:
+    for appear_check in range(1, MG2_MAX_APPEAR_CHECKS + 1):
         frame = grab_roi(sct, ROI_GAME2)
         found, conf, _ = match_template(frame, template_bar, threshold=threshold)
-        print(f"[MG2] check appear: found={found}, conf={conf:.3f}")
+        print(f"[MG2] check appear {appear_check}/{MG2_MAX_APPEAR_CHECKS}: found={found}, conf={conf:.3f}")
         if found:
             print("[MG2] Bar найден. Старт кликов.")
             break
         time.sleep(MG2_APPEAR_CHECK_DELAY)
+    else:
+        print("[MG2] Bar.png не найден в ROI -> возврат в MG1.")
+        return False
 
     interval = MG2_CLICK_INTERVAL
     clicks_done = 0
@@ -199,7 +213,7 @@ def mini_game_2(sct, template_bar):
             no_bar_checks += 1
             if no_bar_checks >= required_no_bar_checks:
                 print(f"[MG2] Bar исчез. Переход в MG3. Сделано {clicks_done} кликов.")
-                return
+                return True
             time.sleep(MG2_NO_BAR_RECHECK_DELAY)
             continue
 
@@ -251,7 +265,15 @@ def mini_game_3(sct, template_fonar):
             # немного морфологии против шумов
             kernel = np.ones(MG3_MORPH_KERNEL_SIZE, np.uint8)
             mask_total = cv2.morphologyEx(mask_total, cv2.MORPH_OPEN, kernel, iterations=MG3_MORPH_OPEN_ITERATIONS)
+            mask_total = cv2.morphologyEx(mask_total, cv2.MORPH_CLOSE, kernel, iterations=MG3_MORPH_CLOSE_ITERATIONS)
             mask_total = cv2.morphologyEx(mask_total, cv2.MORPH_DILATE, kernel, iterations=MG3_MORPH_DILATE_ITERATIONS)
+
+            # Убираем серые области (камень/фон), чтобы не было ложных срабатываний.
+            gray_mask = cv2.inRange(hsv, MG3_GRAY_EXCLUDE_LOW, MG3_GRAY_EXCLUDE_HIGH)
+            mask_total = cv2.bitwise_and(mask_total, cv2.bitwise_not(gray_mask))
+
+            # Делаем активную область серой (не белой) — при этом для контуров это всё ещё "не ноль".
+            mask_total = np.where(mask_total > 0, MG3_MASK_ACTIVE_GRAY_VALUE, 0).astype(np.uint8)
 
             contours, _ = cv2.findContours(mask_total, CONTOUR_RETRIEVAL_MODE, CONTOUR_APPROX_MODE)
             for cnt in contours:
@@ -315,8 +337,8 @@ def run_main_cycle(sct, template_1, template_bar, template_fonar):
             state = BotState.MG2
 
         elif state == BotState.MG2:
-            mini_game_2(sct, template_bar)
-            state = BotState.MG3
+            mg2_completed = mini_game_2(sct, template_bar)
+            state = BotState.MG3 if mg2_completed else BotState.MG1
 
         elif state == BotState.MG3:
             mini_game_3(sct, template_fonar)
