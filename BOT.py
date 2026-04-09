@@ -76,7 +76,11 @@ def match_template(region_bgr, template_bgr, threshold=CONFIDENCE):
 
 
 def click_screen(_x=None, _y=None):
-    # Кликаем ЛКМ без перемещения мыши
+    # Если переданы координаты — наводим мышь в точку клика
+    if _x is not None and _y is not None:
+        pydirectinput.moveTo(int(_x), int(_y))
+
+    # Кликаем ЛКМ
     pydirectinput.mouseDown(button='left')
     time.sleep(0.03)
     pydirectinput.mouseUp(button='left')
@@ -125,25 +129,32 @@ def mini_game_2(sct, template_bar):
 
     max_clicks = 16
     interval = 0.3
+    clicks_done = 0
+    no_bar_checks = 0
+    required_no_bar_checks = 3
 
-    for i in range(max_clicks):
-        # проверяем, что Bar еще есть
+    while clicks_done < max_clicks:
         frame = grab_roi(sct, ROI_GAME2)
         found, conf, _ = match_template(frame, template_bar, threshold=threshold)
-        print(f"[MG2] before click {i+1}: found={found}, conf={conf:.3f}")
+        print(f"[MG2] before click {clicks_done + 1}: found={found}, conf={conf:.3f}")
 
         if not found:
-            print(f"[MG2] Bar пропал раньше времени. Сделано {i}/{max_clicks} кликов.")
-            return
+            no_bar_checks += 1
+            if no_bar_checks >= required_no_bar_checks:
+                print(f"[MG2] Bar исчез. Переход в MG3. Сделано {clicks_done}/{max_clicks} кликов.")
+                return
+            time.sleep(0.03)
+            continue
 
-        # важный момент: окно игры должно быть активным!
+        no_bar_checks = 0
         click_screen(center_x, center_y)
-        print(f"[MG2] CLICK {i+1}/{max_clicks} at ({center_x}, {center_y})")
+        clicks_done += 1
+        print(f"[MG2] CLICK {clicks_done}/{max_clicks} at ({center_x}, {center_y})")
 
-        if i < max_clicks - 1:
+        if clicks_done < max_clicks:
             time.sleep(interval)
 
-    print("[MG2] 16 кликов выполнено.")
+    print("[MG2] Достигнут лимит кликов -> переход в MG3.")
 
 
 # =========================
