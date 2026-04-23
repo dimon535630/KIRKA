@@ -1,7 +1,0 @@
-opencv-python
-numpy
-mss
-pyautogui
-pydirectinput
-keyboard
-pyinstaller
