@@ -1,10 +1,11 @@
 import json
+import os
+import sys
 import threading
 import time
 from enum import Enum
 from pathlib import Path
 import tkinter as tk
-from tkinter import messagebox
 
 import cv2
 import keyboard
@@ -16,9 +17,17 @@ import pydirectinput
 # =========================
 # Пути и конфиг
 # =========================
-BASE_DIR = Path(__file__).resolve().parent
-ASSETS_DIR = BASE_DIR / "assets"
-CONFIG_PATH = BASE_DIR / "config.json"
+if getattr(sys, "frozen", False):
+    APP_DIR = Path(sys.executable).resolve().parent
+else:
+    APP_DIR = Path(__file__).resolve().parent
+
+ASSETS_DIR = APP_DIR / "assets"
+CONFIG_PATH = APP_DIR / "config.json"
+
+# fallback, если каталог с exe недоступен для записи
+USER_CONFIG_DIR = Path(os.getenv("APPDATA", Path.home())) / "KIRKA"
+FALLBACK_CONFIG_PATH = USER_CONFIG_DIR / "config.json"
 
 # =========================
 # Глобальные константы
@@ -87,17 +96,32 @@ pydirectinput.PAUSE = AUTO_GUI_INTERNAL_PAUSE
 
 
 def ensure_config(path: Path) -> dict:
-    if not path.exists():
-        path.write_text(json.dumps(DEFAULT_CONFIG, indent=2, ensure_ascii=False), encoding="utf-8")
-        return DEFAULT_CONFIG.copy()
+    if not path.parent.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-    with path.open("r", encoding="utf-8") as f:
-        loaded = json.load(f)
+    if not path.exists():
+        try:
+            path.write_text(json.dumps(DEFAULT_CONFIG, indent=2, ensure_ascii=False), encoding="utf-8")
+            return DEFAULT_CONFIG.copy()
+        except OSError:
+            FALLBACK_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            FALLBACK_CONFIG_PATH.write_text(json.dumps(DEFAULT_CONFIG, indent=2, ensure_ascii=False), encoding="utf-8")
+            return DEFAULT_CONFIG.copy()
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            loaded = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        loaded = DEFAULT_CONFIG.copy()
 
     hotkeys = loaded.get("hotkeys", {})
     if "start" not in hotkeys or "stop" not in hotkeys:
         loaded = DEFAULT_CONFIG.copy()
-        path.write_text(json.dumps(loaded, indent=2, ensure_ascii=False), encoding="utf-8")
+        try:
+            path.write_text(json.dumps(loaded, indent=2, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            FALLBACK_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            FALLBACK_CONFIG_PATH.write_text(json.dumps(loaded, indent=2, ensure_ascii=False), encoding="utf-8")
     return loaded
 
 
@@ -345,10 +369,22 @@ class BotApp:
         tk.Label(root, textvariable=self.status_var).pack(pady=8)
         tk.Label(root, text=f"Горячие клавиши: старт [{self.start_hotkey}] / стоп [{self.stop_hotkey}]").pack()
 
-        keyboard.add_hotkey(self.start_hotkey, self.start_bot)
-        keyboard.add_hotkey(self.stop_hotkey, self.stop_bot)
+        self.hotkeys_registered = self._register_hotkeys()
+        if not self.hotkeys_registered:
+            self.root.bind("+", lambda _e: self.start_bot())
+            self.root.bind("-", lambda _e: self.stop_bot())
 
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def _register_hotkeys(self):
+        try:
+            keyboard.add_hotkey(self.start_hotkey, self.start_bot)
+            keyboard.add_hotkey(self.stop_hotkey, self.stop_bot)
+            return True
+        except Exception as e:
+            print(f"[WARN] Не удалось зарегистрировать global hotkeys через keyboard: {e}")
+            print("[WARN] Будут работать кнопки GUI и горячие клавиши окна (+/-).")
+            return False
 
     def start_bot(self):
         if self.controller.is_running():
@@ -365,7 +401,8 @@ class BotApp:
 
     def on_close(self):
         self.controller.stop()
-        keyboard.clear_all_hotkeys()
+        if self.hotkeys_registered:
+            keyboard.clear_all_hotkeys()
         self.root.destroy()
 
 
