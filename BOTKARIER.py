@@ -1,86 +1,72 @@
+import json
+import threading
 import time
+from enum import Enum
+from pathlib import Path
+import tkinter as tk
+from tkinter import messagebox
+
 import cv2
-import numpy as np
+import keyboard
 import mss
+import numpy as np
 import pyautogui
 import pydirectinput
-import keyboard
-from enum import Enum
+
+# =========================
+# Пути и конфиг
+# =========================
+BASE_DIR = Path(__file__).resolve().parent
+ASSETS_DIR = BASE_DIR / "assets"
+CONFIG_PATH = BASE_DIR / "config.json"
 
 # =========================
 # Глобальные константы
 # =========================
-# Базовый порог совпадения шаблонов (0.0..1.0) для большинства проверок.
 TEMPLATE_MATCH_CONFIDENCE = 0.80
-# Частота опроса в циклах ожидания (сек), чтобы не перегружать CPU.
 CHECK_DELAY = 0.03
-
-# Отключаем внутренние паузы библиотек автоклика для максимальной точности.
 AUTO_GUI_INTERNAL_PAUSE = 0
-
-# Задержка после обычного клика ЛКМ (сек), чтобы не спамить кликами.
 POST_CLICK_DELAY = 0.05
-# Длительность удержания ЛКМ в MG2 (сек) для "чистого" клика без движения.
 LMB_HOLD_DURATION = 0.1
-# Задержка после срабатывания MG1 (нажатие E), чтобы дать интерфейсу обновиться.
 MG1_POST_SUCCESS_DELAY = 0.15
-
-# Специальный порог совпадения для Bar.png в MG2 (чуть мягче, чем базовый).
 MG2_TEMPLATE_THRESHOLD = 0.72
-# Частота опроса появления Bar.png до начала кликов (сек).
 MG2_APPEAR_CHECK_DELAY = 0.05
-# Максимум проверок появления Bar.png перед возвратом в MG1.
 MG2_MAX_APPEAR_CHECKS = 20
-# Интервал между кликами в MG2 (сек).
 MG2_CLICK_INTERVAL = 1
-# Сколько подряд проверок без Bar.png нужно, чтобы завершить MG2.
 MG2_REQUIRED_NO_BAR_CHECKS = 3
-# Задержка между "пустыми" проверками без Bar.png (сек).
 MG2_NO_BAR_RECHECK_DELAY = 0.03
-
-# Пауза перед повторной проверкой fonar.png, пока MG3 ещё не активирована (сек).
 MG3_WAIT_ACTIVATION_DELAY = 0.05
-# Размер ядра морфологии в MG3 для подавления шумов маски.
 MG3_MORPH_KERNEL_SIZE = (3, 3)
-# Количество итераций морфологического открытия.
 MG3_MORPH_OPEN_ITERATIONS = 1
-# Количество итераций дилатации после открытия.
 MG3_MORPH_DILATE_ITERATIONS = 1
-# Минимальная площадь контура (px), ниже считаем шумом.
 MIN_CONTOUR_AREA = 35
-# Пауза после клика по найденному контуру в MG3 (сек).
 MG3_POST_TARGET_CLICK_DELAY = 0.05
-# Пауза между кадрами обработки MG3 (сек).
 MG3_FRAME_DELAY = 0.01
-
-# Частота проверки исчезновения fonar.png в WAIT_RESET (сек).
 WAIT_RESET_CHECK_DELAY = 0.08
 
-# Горячая клавиша ручной остановки бота.
-STOP_HOTKEY = "f8"
-# Клавиша действия для MG1.
+DEFAULT_CONFIG = {
+    "hotkeys": {
+        "start": "+",
+        "stop": "-",
+    }
+}
+
 MG1_ACTION_KEY = "e"
-# Кнопка мыши для обычного клика.
 MOUSE_LEFT_BUTTON = "left"
-# Режим сопоставления шаблонов OpenCV.
 TEMPLATE_MATCH_METHOD = cv2.TM_CCOEFF_NORMED
-# Режимы поиска контуров OpenCV.
 CONTOUR_RETRIEVAL_MODE = cv2.RETR_EXTERNAL
 CONTOUR_APPROX_MODE = cv2.CHAIN_APPROX_SIMPLE
 
-# ROI (для экрана 1920x1080)
-ROI_GAME1 = {"left": 13,   "top": 11,  "width": 413, "height": 79}
+ROI_GAME1 = {"left": 13, "top": 11, "width": 413, "height": 79}
 ROI_GAME2 = {"left": 1585, "top": 984, "width": 319, "height": 39}
-ROI_GAME3 = {"left": 654,  "top": 309, "width": 669, "height": 390}
+ROI_GAME3 = {"left": 654, "top": 309, "width": 669, "height": 390}
 ROI_FONAR = {"left": 1309, "top": 197, "width": 222, "height": 133}
 
-# Шаблоны
-TEMPLATE_1_PATH = "1.png"
-TEMPLATE_BAR_PATH = "Bar.png"
-TEMPLATE_FONAR_PATH = "fonar.png"
+TEMPLATE_1_PATH = ASSETS_DIR / "1.PNG"
+TEMPLATE_BAR_PATH = ASSETS_DIR / "Bar.png"
+TEMPLATE_FONAR_PATH = ASSETS_DIR / "fonar.png"
 FULL_HD_MONITOR = {"left": 0, "top": 0, "width": 1920, "height": 1080}
 
-# HSV-маски
 COLOR_MASKS = {
     "red": [
         (np.array([3, 20, 36]), np.array([25, 255, 255])),
@@ -92,34 +78,43 @@ COLOR_MASKS = {
         (np.array([8, 40, 50]), np.array([29, 255, 255])),
     ],
     "dark": [
-        (np.array([0, 0, 10]),  np.array([85, 150, 150])),
+        (np.array([0, 0, 10]), np.array([85, 150, 150])),
     ],
 }
 
-# отключаем встроенную паузу, чтобы клики были точнее по времени
 pyautogui.PAUSE = AUTO_GUI_INTERNAL_PAUSE
 pydirectinput.PAUSE = AUTO_GUI_INTERNAL_PAUSE
 
 
-# =========================
-# Вспомогательные функции
-# =========================
-def load_template(path: str):
-    tpl = cv2.imread(path, cv2.IMREAD_COLOR)
+def ensure_config(path: Path) -> dict:
+    if not path.exists():
+        path.write_text(json.dumps(DEFAULT_CONFIG, indent=2, ensure_ascii=False), encoding="utf-8")
+        return DEFAULT_CONFIG.copy()
+
+    with path.open("r", encoding="utf-8") as f:
+        loaded = json.load(f)
+
+    hotkeys = loaded.get("hotkeys", {})
+    if "start" not in hotkeys or "stop" not in hotkeys:
+        loaded = DEFAULT_CONFIG.copy()
+        path.write_text(json.dumps(loaded, indent=2, ensure_ascii=False), encoding="utf-8")
+    return loaded
+
+
+def load_template(path: Path):
+    tpl = cv2.imread(str(path), cv2.IMREAD_COLOR)
     if tpl is None:
         raise FileNotFoundError(f"Не удалось загрузить шаблон: {path}")
     return tpl
 
 
 def grab_roi(sct, roi):
-    """Скрин ROI -> BGR numpy image"""
     shot = sct.grab(roi)
-    img = np.array(shot)[:, :, :3]  # BGRA -> BGR
+    img = np.array(shot)[:, :, :3]
     return img
 
 
 def match_template(region_bgr, template_bgr, threshold=TEMPLATE_MATCH_CONFIDENCE):
-    """Возвращает (found, max_val, max_loc)."""
     if region_bgr.shape[0] < template_bgr.shape[0] or region_bgr.shape[1] < template_bgr.shape[1]:
         return False, 0.0, (0, 0)
 
@@ -129,56 +124,40 @@ def match_template(region_bgr, template_bgr, threshold=TEMPLATE_MATCH_CONFIDENCE
 
 
 def click_screen(_x=None, _y=None):
-    # Если переданы координаты — наводим мышь в точку клика
     if _x is not None and _y is not None:
         pydirectinput.click(int(_x), int(_y))
 
-    # Кликаем ЛКМ
     pydirectinput.click(button=MOUSE_LEFT_BUTTON)
     time.sleep(POST_CLICK_DELAY)
 
 
 def click_lmb_without_move():
-    """
-    Отдельный клик ЛКМ без перемещения курсора.
-    Нужен для MG2, где камера может резко поворачиваться,
-    и лишнее движение мыши ломает механику.
-    """
     pydirectinput.mouseDown(button=MOUSE_LEFT_BUTTON)
     time.sleep(LMB_HOLD_DURATION)
     pydirectinput.mouseUp(button=MOUSE_LEFT_BUTTON)
 
 
-# =========================
-# 1 мини-игра
-# =========================
-def mini_game_1(sct, template_1):
-    """
-    В ROI_GAME1 ждём появление 1.png.
-    Когда найдено -> нажимаем E один раз.
-    """
+def mini_game_1(sct, template_1, stop_event: threading.Event):
     print("[MG1] Ожидание 1.png ...")
-    while True:
+    while not stop_event.is_set():
         frame = grab_roi(sct, ROI_GAME1)
         found, conf, _ = match_template(frame, template_1, threshold=TEMPLATE_MATCH_CONFIDENCE)
         if found:
             keyboard.press_and_release(MG1_ACTION_KEY)
             print(f"[MG1] Найдено (conf={conf:.2f}) -> нажата E")
             time.sleep(MG1_POST_SUCCESS_DELAY)
-            return
+            return True
         time.sleep(CHECK_DELAY)
+    return False
 
 
-# =========================
-# 2 мини-игра
-# =========================
-def mini_game_2(sct, template_bar):
+def mini_game_2(sct, template_bar, stop_event: threading.Event):
     print("[MG2] Ожидание Bar.png ...")
-    # Порог чуть ниже для стабильности
     threshold = MG2_TEMPLATE_THRESHOLD
 
-    # ждём появление
     for appear_check in range(1, MG2_MAX_APPEAR_CHECKS + 1):
+        if stop_event.is_set():
+            return False
         frame = grab_roi(sct, ROI_GAME2)
         found, conf, _ = match_template(frame, template_bar, threshold=threshold)
         print(f"[MG2] check appear {appear_check}/{MG2_MAX_APPEAR_CHECKS}: found={found}, conf={conf:.3f}")
@@ -190,19 +169,17 @@ def mini_game_2(sct, template_bar):
         print("[MG2] Bar.png не найден в ROI -> возврат в MG1.")
         return False
 
-    interval = MG2_CLICK_INTERVAL
     clicks_done = 0
     no_bar_checks = 0
-    required_no_bar_checks = MG2_REQUIRED_NO_BAR_CHECKS
 
-    while True:
+    while not stop_event.is_set():
         frame = grab_roi(sct, ROI_GAME2)
         found, conf, _ = match_template(frame, template_bar, threshold=threshold)
         print(f"[MG2] before click {clicks_done + 1}: found={found}, conf={conf:.3f}")
 
         if not found:
             no_bar_checks += 1
-            if no_bar_checks >= required_no_bar_checks:
+            if no_bar_checks >= MG2_REQUIRED_NO_BAR_CHECKS:
                 print(f"[MG2] Bar исчез. Переход в MG3. Сделано {clicks_done} кликов.")
                 return True
             time.sleep(MG2_NO_BAR_RECHECK_DELAY)
@@ -212,24 +189,15 @@ def mini_game_2(sct, template_bar):
         click_lmb_without_move()
         clicks_done += 1
         print(f"[MG2] CLICK {clicks_done} (без движения мыши)")
+        time.sleep(MG2_CLICK_INTERVAL)
+    return False
 
-        time.sleep(interval)
 
-
-# =========================
-# 3 мини-игра
-# =========================
-def mini_game_3(sct, template_fonar):
-    """
-    MG3 активируется только когда найден fonar.png в ROI_FONAR.
-    Пока fonar.png не найден — HSV-обработка не выполняется.
-    Как только fonar.png пропадает — MG3 сразу завершается.
-    """
+def mini_game_3(sct, template_fonar, stop_event: threading.Event):
     print("[MG3] Ожидание появления fonar.png для активации HSV-обработки...")
     mg3_active = False
 
-    while True:
-        # Покадровая проверка состояния fonar.png
+    while not stop_event.is_set():
         fonar_frame = grab_roi(sct, ROI_FONAR)
         fonar_found, fonar_conf, _ = match_template(fonar_frame, template_fonar, threshold=TEMPLATE_MATCH_CONFIDENCE)
 
@@ -242,18 +210,17 @@ def mini_game_3(sct, template_fonar):
                 continue
         elif not fonar_found:
             print(f"[MG3] fonar.png исчез (conf={fonar_conf:.2f}) -> остановка MG3")
-            return
+            return True
 
         frame = grab_roi(sct, ROI_GAME3)
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        for color_name, ranges in COLOR_MASKS.items():
+        for ranges in COLOR_MASKS.values():
             mask_total = None
             for low, high in ranges:
                 mask = cv2.inRange(hsv, low, high)
                 mask_total = mask if mask_total is None else cv2.bitwise_or(mask_total, mask)
 
-            # немного морфологии против шумов
             kernel = np.ones(MG3_MORPH_KERNEL_SIZE, np.uint8)
             mask_total = cv2.morphologyEx(mask_total, cv2.MORPH_OPEN, kernel, iterations=MG3_MORPH_OPEN_ITERATIONS)
             mask_total = cv2.morphologyEx(mask_total, cv2.MORPH_DILATE, kernel, iterations=MG3_MORPH_DILATE_ITERATIONS)
@@ -268,26 +235,22 @@ def mini_game_3(sct, template_fonar):
                 cx = ROI_GAME3["left"] + x + w // 2
                 cy = ROI_GAME3["top"] + y + h // 2
                 click_screen(cx, cy)
-                # небольшая задержка между кликами
                 time.sleep(MG3_POST_TARGET_CLICK_DELAY)
 
         time.sleep(MG3_FRAME_DELAY)
+    return False
 
 
-def wait_fonar_disappear(sct, template_fonar):
-    """
-    После 3 мини-игры ждём исчезновение fonar.png.
-    Только после этого стартуем снова с MG1.
-    """
+def wait_fonar_disappear(sct, template_fonar, stop_event: threading.Event):
     print("[WAIT] Жду исчезновение fonar.png ...")
-    while True:
-        # Можно проверять на всём экране 1920x1080
+    while not stop_event.is_set():
         full = grab_roi(sct, FULL_HD_MONITOR)
-        found, conf, _ = match_template(full, template_fonar, threshold=TEMPLATE_MATCH_CONFIDENCE)
+        found, _, _ = match_template(full, template_fonar, threshold=TEMPLATE_MATCH_CONFIDENCE)
         if not found:
             print("[WAIT] fonar.png исчез -> новый цикл")
-            return
+            return True
         time.sleep(WAIT_RESET_CHECK_DELAY)
+    return False
 
 
 class BotState(Enum):
@@ -297,56 +260,125 @@ class BotState(Enum):
     WAIT_RESET = "WAIT_RESET"
 
 
-def run_main_cycle(sct, template_1, template_bar, template_fonar):
-    """
-    Основной управляющий цикл:
-      MG1 -> MG2 -> MG3 -> WAIT_RESET -> MG1 ...
-    Выход:
-      - Ctrl+C в консоли
-      - клавиша F8 во время работы
-    """
-    state = BotState.MG1
-    cycle_num = 1
+class BotController:
+    def __init__(self):
+        self.stop_event = threading.Event()
+        self.thread = None
+        self.running = False
 
-    while True:
-        if keyboard.is_pressed(STOP_HOTKEY):
-            print("[MAIN] Нажата F8 -> остановка бота.")
+    def is_running(self):
+        return self.running and self.thread is not None and self.thread.is_alive()
+
+    def start(self):
+        if self.is_running():
             return
+        self.stop_event.clear()
+        self.thread = threading.Thread(target=self._worker, daemon=True)
+        self.thread.start()
+        self.running = True
 
-        print(f"[MAIN] Цикл #{cycle_num} | state={state.value}")
+    def stop(self):
+        self.stop_event.set()
+        self.running = False
 
-        if state == BotState.MG1:
-            mini_game_1(sct, template_1)
-            state = BotState.MG2
+    def _worker(self):
+        try:
+            print("Загрузка шаблонов...")
+            template_1 = load_template(TEMPLATE_1_PATH)
+            template_bar = load_template(TEMPLATE_BAR_PATH)
+            template_fonar = load_template(TEMPLATE_FONAR_PATH)
 
-        elif state == BotState.MG2:
-            mg2_completed = mini_game_2(sct, template_bar)
-            state = BotState.MG3 if mg2_completed else BotState.MG1
+            with mss.mss() as sct:
+                self.run_main_cycle(sct, template_1, template_bar, template_fonar)
+        except Exception as e:
+            print(f"[ERROR] {e}")
+        finally:
+            self.running = False
 
-        elif state == BotState.MG3:
-            mini_game_3(sct, template_fonar)
-            state = BotState.WAIT_RESET
+    def run_main_cycle(self, sct, template_1, template_bar, template_fonar):
+        state = BotState.MG1
+        cycle_num = 1
 
-        elif state == BotState.WAIT_RESET:
-            wait_fonar_disappear(sct, template_fonar)
-            cycle_num += 1
-            state = BotState.MG1
+        while not self.stop_event.is_set():
+            print(f"[MAIN] Цикл #{cycle_num} | state={state.value}")
+
+            if state == BotState.MG1:
+                if not mini_game_1(sct, template_1, self.stop_event):
+                    break
+                state = BotState.MG2
+
+            elif state == BotState.MG2:
+                mg2_completed = mini_game_2(sct, template_bar, self.stop_event)
+                if self.stop_event.is_set():
+                    break
+                state = BotState.MG3 if mg2_completed else BotState.MG1
+
+            elif state == BotState.MG3:
+                if not mini_game_3(sct, template_fonar, self.stop_event):
+                    break
+                state = BotState.WAIT_RESET
+
+            elif state == BotState.WAIT_RESET:
+                if not wait_fonar_disappear(sct, template_fonar, self.stop_event):
+                    break
+                cycle_num += 1
+                state = BotState.MG1
+
+
+class BotApp:
+    def __init__(self, root: tk.Tk, controller: BotController, config: dict):
+        self.root = root
+        self.controller = controller
+        self.config = config
+        self.start_hotkey = self.config["hotkeys"]["start"]
+        self.stop_hotkey = self.config["hotkeys"]["stop"]
+
+        self.root.title("KIRKA Bot Launcher")
+        self.root.geometry("320x180")
+        self.root.resizable(False, False)
+
+        self.status_var = tk.StringVar(value="Статус: остановлен")
+
+        tk.Label(root, text="Управление ботом", font=("Arial", 14, "bold")).pack(pady=10)
+        tk.Button(root, text="Старт", width=20, command=self.start_bot).pack(pady=5)
+        tk.Button(root, text="Стоп", width=20, command=self.stop_bot).pack(pady=5)
+        tk.Label(root, textvariable=self.status_var).pack(pady=8)
+        tk.Label(root, text=f"Горячие клавиши: старт [{self.start_hotkey}] / стоп [{self.stop_hotkey}]").pack()
+
+        keyboard.add_hotkey(self.start_hotkey, self.start_bot)
+        keyboard.add_hotkey(self.stop_hotkey, self.stop_bot)
+
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def start_bot(self):
+        if self.controller.is_running():
+            return
+        self.controller.start()
+        self.status_var.set("Статус: запущен")
+
+    def stop_bot(self):
+        if not self.controller.is_running():
+            self.status_var.set("Статус: остановлен")
+            return
+        self.controller.stop()
+        self.status_var.set("Статус: остановка...")
+
+    def on_close(self):
+        self.controller.stop()
+        keyboard.clear_all_hotkeys()
+        self.root.destroy()
 
 
 def main():
-    print("Загрузка шаблонов...")
-    template_1 = load_template(TEMPLATE_1_PATH)
-    template_bar = load_template(TEMPLATE_BAR_PATH)
-    template_fonar = load_template(TEMPLATE_FONAR_PATH)
+    pyautogui.FAILSAFE = True
+    config = ensure_config(CONFIG_PATH)
 
-    print("Старт. Для выхода нажми Ctrl+C")
-    with mss.mss() as sct:
-        run_main_cycle(sct, template_1, template_bar, template_fonar)
+    root = tk.Tk()
+    controller = BotController()
+    app = BotApp(root, controller, config)
+    root.after(300, lambda: app.status_var.set("Статус: запущен" if controller.is_running() else "Статус: остановлен"))
+    root.mainloop()
 
 
 if __name__ == "__main__":
-    pyautogui.FAILSAFE = True  # увести мышь в верхний левый угол для аварийной остановки
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n[MAIN] Остановлено пользователем (Ctrl+C).")
+    main()
