@@ -1,0 +1,45 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Build onefile exe
+        run: |
+          pyinstaller --noconfirm --onefile --windowed --name KIRKA-Launcher main.py
+
+      - name: Prepare bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release -Force | Out-Null
+          Copy-Item dist/KIRKA-Launcher.exe release/
+          Copy-Item -Recurse images release/images
+          New-Item -ItemType Directory -Path release/config -Force | Out-Null
+          Copy-Item config/hotkeys.json release/config/hotkeys.json
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: KIRKA-Launcher-windows
+          path: release/
