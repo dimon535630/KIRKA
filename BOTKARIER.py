@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import sys
 import threading
 import time
@@ -38,6 +39,9 @@ AUTO_GUI_INTERNAL_PAUSE = 0
 POST_CLICK_DELAY = 0.05
 LMB_HOLD_DURATION = 0.1
 MG1_POST_SUCCESS_DELAY = 0.15
+HUMAN_MOVE_MIN_DURATION = 0.12
+HUMAN_MOVE_MAX_DURATION = 0.28
+HUMAN_MOVE_JITTER_PIXELS = 3
 MG2_TEMPLATE_THRESHOLD = 0.72
 MG2_APPEAR_CHECK_DELAY = 0.05
 MG2_MAX_APPEAR_CHECKS = 20
@@ -57,7 +61,12 @@ DEFAULT_CONFIG = {
     "hotkeys": {
         "start": "+",
         "stop": "-",
-    }
+    },
+    "cursor_movement": {
+        "min_duration": HUMAN_MOVE_MIN_DURATION,
+        "max_duration": HUMAN_MOVE_MAX_DURATION,
+        "jitter_pixels": HUMAN_MOVE_JITTER_PIXELS,
+    },
 }
 
 MG1_ACTION_KEY = "e"
@@ -94,6 +103,11 @@ COLOR_MASKS = {
 pyautogui.PAUSE = AUTO_GUI_INTERNAL_PAUSE
 pydirectinput.PAUSE = AUTO_GUI_INTERNAL_PAUSE
 
+# runtime-настройки движения курсора (обновляются из config.json в main)
+CURSOR_MOVE_MIN_DURATION = HUMAN_MOVE_MIN_DURATION
+CURSOR_MOVE_MAX_DURATION = HUMAN_MOVE_MAX_DURATION
+CURSOR_MOVE_JITTER_PIXELS = HUMAN_MOVE_JITTER_PIXELS
+
 
 def ensure_config(path: Path) -> dict:
     if not path.parent.exists():
@@ -115,14 +129,36 @@ def ensure_config(path: Path) -> dict:
         loaded = DEFAULT_CONFIG.copy()
 
     hotkeys = loaded.get("hotkeys", {})
-    if "start" not in hotkeys or "stop" not in hotkeys:
-        loaded = DEFAULT_CONFIG.copy()
+    movement = loaded.get("cursor_movement", {})
+    required_movement = {"min_duration", "max_duration", "jitter_pixels"}
+    movement_valid = required_movement.issubset(set(movement.keys()))
+
+    if "start" not in hotkeys or "stop" not in hotkeys or not movement_valid:
+        loaded = json.loads(json.dumps(DEFAULT_CONFIG))
         try:
             path.write_text(json.dumps(loaded, indent=2, ensure_ascii=False), encoding="utf-8")
         except OSError:
             FALLBACK_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
             FALLBACK_CONFIG_PATH.write_text(json.dumps(loaded, indent=2, ensure_ascii=False), encoding="utf-8")
     return loaded
+
+
+def apply_runtime_config(config: dict):
+    global CURSOR_MOVE_MIN_DURATION, CURSOR_MOVE_MAX_DURATION, CURSOR_MOVE_JITTER_PIXELS
+
+    movement = config.get("cursor_movement", {})
+    min_duration = float(movement.get("min_duration", HUMAN_MOVE_MIN_DURATION))
+    max_duration = float(movement.get("max_duration", HUMAN_MOVE_MAX_DURATION))
+    jitter_pixels = int(movement.get("jitter_pixels", HUMAN_MOVE_JITTER_PIXELS))
+
+    # безопасная нормализация значений
+    min_duration = max(0.01, min_duration)
+    max_duration = max(min_duration, max_duration)
+    jitter_pixels = max(0, jitter_pixels)
+
+    CURSOR_MOVE_MIN_DURATION = min_duration
+    CURSOR_MOVE_MAX_DURATION = max_duration
+    CURSOR_MOVE_JITTER_PIXELS = jitter_pixels
 
 
 def load_template(path: Path):
@@ -149,10 +185,24 @@ def match_template(region_bgr, template_bgr, threshold=TEMPLATE_MATCH_CONFIDENCE
 
 def click_screen(_x=None, _y=None):
     if _x is not None and _y is not None:
-        pydirectinput.click(int(_x), int(_y))
+        move_cursor_human_like(int(_x), int(_y))
 
     pydirectinput.click(button=MOUSE_LEFT_BUTTON)
     time.sleep(POST_CLICK_DELAY)
+
+
+def move_cursor_human_like(target_x: int, target_y: int):
+    """
+    Плавно ведем курсор к цели с небольшой случайностью,
+    чтобы движение выглядело естественнее для глаза.
+    """
+    jitter_x = random.randint(-CURSOR_MOVE_JITTER_PIXELS, CURSOR_MOVE_JITTER_PIXELS)
+    jitter_y = random.randint(-CURSOR_MOVE_JITTER_PIXELS, CURSOR_MOVE_JITTER_PIXELS)
+    final_x = target_x + jitter_x
+    final_y = target_y + jitter_y
+
+    duration = random.uniform(CURSOR_MOVE_MIN_DURATION, CURSOR_MOVE_MAX_DURATION)
+    pyautogui.moveTo(final_x, final_y, duration=duration, tween=pyautogui.easeInOutQuad)
 
 
 def click_lmb_without_move():
@@ -409,6 +459,7 @@ class BotApp:
 def main():
     pyautogui.FAILSAFE = True
     config = ensure_config(CONFIG_PATH)
+    apply_runtime_config(config)
 
     root = tk.Tk()
     controller = BotController()

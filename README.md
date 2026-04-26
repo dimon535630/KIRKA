@@ -23,9 +23,17 @@
   "hotkeys": {
     "start": "+",
     "stop": "-"
+  },
+  "cursor_movement": {
+    "min_duration": 0.12,
+    "max_duration": 0.28,
+    "jitter_pixels": 3
   }
 }
 ```
+
+- `min_duration` / `max_duration` — диапазон времени (сек) плавного движения курсора.
+- `jitter_pixels` — небольшой случайный сдвиг точки клика для более живого движения.
 
 ## Структура
 
