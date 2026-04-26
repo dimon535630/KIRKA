@@ -1,0 +1,11 @@
+{
+  "hotkeys": {
+    "start": "+",
+    "stop": "-"
+  },
+  "cursor_movement": {
+    "min_duration": 0.12,
+    "max_duration": 0.28,
+    "jitter_pixels": 3
+  }
+}
